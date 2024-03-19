@@ -1,5 +1,5 @@
 /*!
- * Copyright 2021 WPPConnect Team
+ * Copyright 2022 WPPConnect Team
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,19 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// license end
+
 import execa from 'execa';
-import semver from 'semver';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { checkUpdate } from '../checkUpdate';
-import { HTML_DIR } from '../constants';
+import { HTML_DIR, VERSIONS_FILE } from '../constants';
+import { fetchCurrentAlphaVersion } from '../fetchCurrentAlphaVersion';
+import { fetchCurrentBetaVersion } from '../fetchCurrentBetaVersion';
+import { fetchCurrentVersion } from '../fetchCurrentVersion';
 import { fetchLatest } from '../fetchLatest';
+import { fetchLatestAlpha } from '../fetchLatestAlpha';
+import { fetchLatestBeta } from '../fetchLatestBeta';
 import { getAvailableVersions } from '../getAvailableVersions';
-import { getLatestVersion } from '../getLatestVersion';
+import { getPageContent } from '../getPageContent';
 
 /**
- * Verifica se está sendo executando pelo GitHub actions
+ * Checks if it is executed by GitHub actions
  */
 const isCI =
   process.env.CI &&
@@ -41,63 +46,123 @@ function getVersionPath(version: string) {
   return path.join(HTML_DIR, `${version}.html`);
 }
 
+function setGitHubState(key: string, value: any) {
+  const jsonValue = JSON.stringify(value);
+
+  if (!process.env.GITHUB_OUTPUT) {
+    console.log(`set-output name=${key}::${jsonValue}`);
+    return;
+  }
+  fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${jsonValue}${os.EOL}`, {
+    encoding: 'utf8',
+  });
+}
+
 /**
- * Verifica todas versões atualizadas e se possuí alguma que não funciona mais
- * @returns Quantidade de versões desatualizadas
+ * Check all updated versions and return that no longer work
+ * @returns List of outdated versions
  */
 async function checkActiveVersions() {
   const versions = getAvailableVersions();
 
   const outdated: string[] = [];
   for (const version of versions) {
-    process.stderr.write(`Cheking update of ${version} - `);
-    const latest = await checkUpdate(version);
-    if (!latest.isBelowHard) {
-      process.stderr.write(`OK\n`);
+    process.stderr.write(`Checking update of ${version} - `);
+    const latest = await checkUpdate(
+      version.replace(/-(alpha|beta)/, '')
+    ).catch(() => null);
+
+    if (latest === null) {
+      process.stderr.write(`failed\n`);
       continue;
     }
 
-    process.stderr.write(`outdated\n`);
-    // await fs.promises.unlink(getVersionPath(version));
-    outdated.push(version);
+    if (latest.isBelowHard) {
+      process.stderr.write(`outdated\n`);
+      outdated.push(version);
+      continue;
+    }
+
+    const content = getPageContent(version);
+
+    const matches = content.match(/"hard_expire_time"\s+data-time="([\d.]+)"/);
+
+    if (matches) {
+      const hardExpire = parseFloat(matches[1]) * 1000;
+
+      if (hardExpire < Date.now()) {
+        process.stderr.write(`outdated\n`);
+        outdated.push(version);
+        continue;
+      }
+    }
+
+    process.stderr.write(`OK\n`);
+    continue;
   }
   return outdated;
 }
 
 /**
- * Verifica e atualiza a última versão do whatsapp
- * @returns Nova versão caso tiver sido atualizado, null constrário
+ * Check and update the latest version of whatsapp
+ * @returns New version if it has been updated, otherwise null
  */
 async function updateLatest() {
-  process.stderr.write(`Cheking latest update\n`);
-  const latest = await checkUpdate();
-
   process.stderr.write(`Fetching HTML content\n`);
-  const html = await fetchLatest();
 
-  let version = null;
+  const versions = getAvailableVersions();
 
-  if (!latest.isUpdated) {
-    version = latest.currentVersion;
-  } else {
-    // Verifica atualização dentro da página do WhatsApp
-    const versionRE = /,\w+="(2\.\d+\.\d+)",/;
+  const functions = [fetchLatest, fetchLatestBeta];
+
+  for (const func of functions) {
+    const html = await func();
+
+    let version: string | null = null;
+
+    // Get the version inside of WhatsApp page
+    const versionRE = /\w+="(2\.\d+\.\d+)"|manifest-(2\.\d+\.\d+)\.json/;
     const matches = versionRE.exec(html);
 
     if (matches) {
-      version = matches[1];
+      version = matches.slice(1).find((m) => !!m) || null;
+
+      // Check is beta
+      const isBetaRE = /x-wa-beta="1"/;
+      if (isBetaRE.test(html)) {
+        version += '-beta';
+      }
+    }
+
+    if (version && !versions.includes(version)) {
+      process.stderr.write(`New version available: ${version}\n`);
+
+      process.stderr.write(`Generating new file\n`);
+      await fs.promises.writeFile(getVersionPath(version), html, {
+        encoding: 'utf8',
+      });
+      process.stderr.write(`Done\n`);
+      return version;
     }
   }
 
-  if (version && semver.gt(version, getLatestVersion())) {
-    process.stderr.write(`New version available: ${version}\n`);
+  const alphaVersion = await fetchCurrentAlphaVersion();
+  if (alphaVersion) {
+    // Check only part of version: 2.3000.1012058694-alpha -> 2.3000.101205
+    const hasNewVersion = versions
+      .map((v) => v.substring(0, 13))
+      .includes(alphaVersion.substring(0, 13));
 
-    process.stderr.write(`Generating new file\n`);
-    await fs.promises.writeFile(getVersionPath(version), html, {
-      encoding: 'utf8',
-    });
-    process.stderr.write(`Done\n`);
-    return version;
+    if (!hasNewVersion) {
+      process.stderr.write(`New version available: ${alphaVersion}\n`);
+
+      process.stderr.write(`Generating new file\n`);
+      const html = await fetchLatestAlpha();
+      await fs.promises.writeFile(getVersionPath(alphaVersion), html, {
+        encoding: 'utf8',
+      });
+      process.stderr.write(`Done\n`);
+      return alphaVersion;
+    }
   }
 
   process.stderr.write(`is updated\n`);
@@ -105,21 +170,96 @@ async function updateLatest() {
   return null;
 }
 
+async function updateJsonFile() {
+  process.stderr.write(`Updating versions.json file\n`);
+
+  const currentVersion = await fetchCurrentVersion();
+  const currentBeta = await fetchCurrentBetaVersion();
+  const currentAlpha = await fetchCurrentAlphaVersion();
+
+  let json = await fs.promises.readFile(VERSIONS_FILE, {
+    encoding: 'utf8',
+  });
+
+  const content: {
+    currentVersion: string | null;
+    currentBeta: string | null;
+    currentAlpha: string | null;
+    versions: {
+      version: string;
+      beta: boolean;
+      released: string;
+      expire: string;
+    }[];
+  } = JSON.parse(json);
+
+  const hasChanges =
+    content.currentVersion !== currentVersion ||
+    content.currentBeta !== currentBeta ||
+    content.currentAlpha !== currentAlpha;
+
+  content.currentVersion = currentVersion;
+  content.currentBeta = currentBeta;
+  content.currentAlpha = currentAlpha;
+
+  const versions = getAvailableVersions();
+
+  // Remove outdated versions
+  content.versions = content.versions.filter((v) =>
+    versions.includes(v.version)
+  );
+
+  const isBetaRE = /beta/;
+
+  for (const versionNumber of versions) {
+    if (content.versions.some((v) => v.version === versionNumber)) {
+      continue;
+    }
+
+    const released: Date = new Date();
+    let expire: Date = new Date();
+
+    const html = getPageContent(versionNumber);
+    const matches = html.match(/"hard_expire_time"\s+data-time="([\d.]+)"/);
+
+    if (matches) {
+      const timestamp = parseFloat(matches[1]) * 1000;
+
+      expire = new Date(timestamp);
+    }
+
+    content.versions.push({
+      version: versionNumber,
+      beta: isBetaRE.test(versionNumber),
+      released: released.toISOString(),
+      expire: expire.toISOString(),
+    });
+  }
+
+  json = JSON.stringify(content, null, 2);
+
+  await fs.promises.writeFile(VERSIONS_FILE, json, {
+    encoding: 'utf8',
+  });
+
+  process.stderr.write(`The versions.json file was updated\n`);
+
+  return hasChanges;
+}
+
 async function run() {
   const outdated = await checkActiveVersions();
   const newVersion = await updateLatest();
   const hasChanges = !!newVersion || !!outdated.length;
+  const hasJsonChanges = await updateJsonFile();
 
   if (isCI) {
-    console.log(
-      `::set-output name=hasOutdated::${JSON.stringify(outdated.length > 0)}`
-    );
-    console.log(`::set-output name=outdated::${JSON.stringify(outdated)}`);
-    console.log(
-      `::set-output name=hasNewVersion::${JSON.stringify(!!newVersion)}`
-    );
-    console.log(`::set-output name=version::${JSON.stringify(newVersion)}`);
-    console.log(`::set-output name=hasChanges::${JSON.stringify(hasChanges)}`);
+    setGitHubState('hasOutdated', outdated.length > 0);
+    setGitHubState('outdated', outdated);
+    setGitHubState('hasNewVersion', !!newVersion);
+    setGitHubState('version', newVersion);
+    setGitHubState('hasChanges', hasChanges);
+    setGitHubState('hasJsonChanges', hasJsonChanges);
 
     if (runCommit) {
       for (const version of outdated) {
@@ -127,18 +267,33 @@ async function run() {
         const { stdout } = await execa('git', [
           'commit',
           '-m',
-          `fix: Removido versão desatualizada: ${version}`,
+          `fix: Removed outdated version: ${version}`,
           getVersionPath(version),
         ]);
         process.stderr.write(`${stdout}\n`);
       }
+
       if (newVersion) {
         await execa('git', ['add', getVersionPath(newVersion)]);
+        await execa('git', ['add', VERSIONS_FILE]);
+
         const { stdout } = await execa('git', [
           'commit',
           '-m',
-          `fix: Adicionado nova versão: ${newVersion}`,
+          `fix: Added new version: ${newVersion}`,
           getVersionPath(newVersion),
+          VERSIONS_FILE,
+        ]);
+        process.stderr.write(`${stdout}\n`);
+      }
+
+      if (!newVersion && (outdated.length > 0 || hasJsonChanges)) {
+        await execa('git', ['add', VERSIONS_FILE]);
+        const { stdout } = await execa('git', [
+          'commit',
+          '-m',
+          `chore: Updated versions.json`,
+          VERSIONS_FILE,
         ]);
         process.stderr.write(`${stdout}\n`);
       }

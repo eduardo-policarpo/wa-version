@@ -1,5 +1,5 @@
 /*!
- * Copyright 2021 WPPConnect Team
+ * Copyright 2022 WPPConnect Team
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,10 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// license end
+
 export * from './checkUpdate';
 export * as constants from './constants';
+export * from './fetchCurrentAlphaVersion';
+export * from './fetchCurrentBetaVersion';
+export * from './fetchCurrentVersion';
 export * from './fetchLatest';
+export * from './fetchLatestBeta';
 export * from './getAvailableVersions';
 export * from './getLatestVersion';
+export * from './fetchLatestAlpha';
 export * from './getPageContent';
+export * from './getVersionInfo';

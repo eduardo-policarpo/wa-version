@@ -8,14 +8,14 @@ on:
     branches:
       - '*'
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0,30 * * * *'
 
 jobs:
   wa-update:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           token: ${{ secrets.PERSONAL_TOKEN }}
 
@@ -25,16 +25,16 @@ jobs:
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Setup Node
-        uses: actions/setup-node@v2.4.1
+        uses: actions/setup-node@v3
         with:
-          node-version: 14.x
+          node-version: 18.x
 
       - name: Get npm cache directory
         id: npm-cache
         run: |
-          echo "::set-output name=dir::$(npm config get cache)"
+          echo "dir=$(npm config get cache)" >> $GITHUB_OUTPUT
       - name: Setup npm cache
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: ${{ steps.npm-cache.outputs.dir }}
           key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
@@ -44,11 +44,26 @@ jobs:
       - name: Install Dependencies
         run: npm ci || npm install
 
+      - name: Fix husky
+        run: chmod ug+x .husky/pre-commit
+
       - name: Check Updates
         id: update
         run: npm run wa-update
         env:
           WA_COMMIT: true
+
+      - name: Git Status
+        if: ${{ steps.update.outputs.hasChanges == 'true' }}
+        run: git status
+
+      - name: Remove untracked files
+        if: ${{ steps.update.outputs.hasChanges == 'true' }}
+        run: git clean -fd
+
+      - name: Release
+        if: ${{ steps.update.outputs.hasChanges == 'true' }}
+        run: npm run release -- --ci -i patch
 
       - name: Discord Notification (Outdated)
         uses: sarisia/actions-status-discord@v1
@@ -57,10 +72,10 @@ jobs:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
           nodetail: true
           color: 0xCB2431
-          title: Versões sem mais suporte
+          title: Outdated WhatsApp WEB versions
           description: |
-            Algumas versões do WhatsApp foram desativadas, assim não funcionando mais.
-            Versões sem Suporte: `${{ join(fromJSON(steps.update.outputs.outdated), '`, `') }}`
+            Some versions of WhatsApp WEB doesn't work anymore.
+            Outdated versions: `${{ join(fromJSON(steps.update.outputs.outdated), '`, `') }}`
 
       - name: Discord Notification (New)
         uses: sarisia/actions-status-discord@v1
@@ -69,11 +84,7 @@ jobs:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
           nodetail: true
           color: 0x28A745
-          title: Nova versão do WhatsApp WEB!
+          title: New version for WhatsApp WEB!
           description: |
-            Acabou de sair uma nova versão do WhatsApp WEB.
-            Número da Versão: `${{ fromJSON(steps.update.outputs.version) }}`
-
-      - name: Release
-        if: ${{ steps.update.outputs.hasChanges == 'true' }}
-        run: npm run release -- --ci -i patch
+            A new version of WhatsApp WEB has just been released.
+            Version Number: `${{ fromJSON(steps.update.outputs.version) }}`

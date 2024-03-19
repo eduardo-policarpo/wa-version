@@ -1,5 +1,5 @@
 /*!
- * Copyright 2021 WPPConnect Team
+ * Copyright 2022 WPPConnect Team
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// license end
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as semver from 'semver';
@@ -25,7 +25,8 @@ import { HTML_DIR } from './constants';
  * @returns Lista de versões
  */
 export function getAvailableVersions(
-  versionMatch?: string | semver.Range
+  versionMatch?: string | semver.Range,
+  includePrerelease = true
 ): string[] {
   const versions = fs
     .readdirSync(HTML_DIR)
@@ -34,7 +35,9 @@ export function getAvailableVersions(
   const sorted = semver.sort(versions);
 
   if (versionMatch) {
-    return sorted.filter((v) => semver.satisfies(v, versionMatch));
+    return sorted.filter((v) =>
+      semver.satisfies(v, versionMatch, { includePrerelease })
+    );
   }
 
   return sorted;
